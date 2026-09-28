@@ -57,7 +57,14 @@
   .bars i.lit { background: var(--accent); }
   .note { font-size: 13px; color: var(--muted); margin: 12px 0 0; }
   .error { color: var(--danger); }
-  #connected { display: none; }
+  #connected, #unlocked { display: none; }
+  #locked { display: none; }
+  .lockcard { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .lockcard p { margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+  input[type=password] { font: inherit; font-size: 22px; letter-spacing: .3em; text-align: center; width: 100%;
+                         padding: 12px; border-radius: 12px; border: 1px solid var(--line);
+                         background: var(--bg); color: var(--text); margin-bottom: 12px; }
+  label.check { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-bottom: 12px; color: var(--muted); }
   .row { display: flex; gap: 8px; margin-top: 8px; }
   .row button { flex: 1; }
 </style>
@@ -75,6 +82,16 @@
   </section>
 
   <section id="connected">
+   <div id="locked">
+    <form class="lockcard" id="pinForm" autocomplete="off">
+      <p>Enter the Pi's PIN to unlock it.</p>
+      <input type="password" id="pin" inputmode="numeric" autocomplete="off" aria-label="PIN">
+      <label class="check"><input type="checkbox" id="remember" checked> Remember on this phone</label>
+      <button id="unlockBtn" type="submit">Unlock</button>
+      <p class="note" id="pinNote">&nbsp;</p>
+    </form>
+   </div>
+   <div id="unlocked">
     <button id="toggleBtn" disabled>…</button>
 
     <h2>Status</h2>
@@ -89,6 +106,7 @@
     <h2>Recent devices</h2>
     <ul id="devices"><li><span class="dev"><span class="name unnamed">Waiting for data…</span></span></li></ul>
     <p class="note" id="updated">&nbsp;</p>
+   </div>
 
     <div class="row"><button class="secondary" id="disconnectBtn">Disconnect</button></div>
   </section>
@@ -99,10 +117,13 @@ const SERVICE = "ee371e50-2d78-4287-861a-fb3439b47a30";
 const STATUS  = "ee371e51-2d78-4287-861a-fb3439b47a30";
 const DEVICES = "ee371e52-2d78-4287-861a-fb3439b47a30";
 const CONTROL = "ee371e53-2d78-4287-861a-fb3439b47a30";
+const AUTH    = "ee371e54-2d78-4287-861a-fb3439b47a30";
+const PIN_KEY = "fieldpi-pin";
 
 const $ = id => document.getElementById(id);
 const DEMO = new URLSearchParams(location.search).has("demo");
 let device = null, chars = null, pollTimer = null, tick = 0, lastStatus = null, wantConnected = false;
+let autoUnlockTried = false, unlocking = false;
 
 // Web Bluetooth allows one GATT operation at a time, so everything goes through this queue.
 let queue = Promise.resolve();
@@ -172,14 +193,86 @@ const decoder = new TextDecoder();
 const readJSON = c => gatt(() => c.readValue()).then(v => JSON.parse(decoder.decode(v)));
 
 async function poll() {
-  if (document.hidden) return;
+  if (document.hidden || unlocking) return;
   try {
-    renderStatus(await readJSON(chars.status));
+    const s = await readJSON(chars.status);
+    if (s.locked) return onLocked(s);
+    showLocked(false);
+    renderStatus(s);
     if (tick++ % 3 === 0) renderDevices(await readJSON(chars.devices));
   } catch (e) {
     console.warn("poll failed", e);
   }
 }
+
+// ---- PIN unlock: read a one-time challenge, answer with HMAC-SHA256(PIN, challenge) ----
+const savedPin = {
+  get() { try { return localStorage.getItem(PIN_KEY); } catch (e) { return null; } },
+  set(v) { try { localStorage.setItem(PIN_KEY, v); } catch (e) {} },
+  clear() { try { localStorage.removeItem(PIN_KEY); } catch (e) {} },
+};
+
+function showLocked(locked) {
+  $("locked").style.display = locked ? "block" : "none";
+  $("unlocked").style.display = locked ? "none" : "block";
+}
+
+async function hmacHex(pin, message) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(pin), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));
+  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function onLocked(s) {
+  showLocked(true);
+  if (s.wait > 0) {
+    $("pinNote").textContent = `Too many wrong PINs. Try again in ${s.wait} s.`;
+    $("pinNote").className = "note error";
+    return;
+  }
+  const pin = savedPin.get();
+  if (pin && !autoUnlockTried) {
+    autoUnlockTried = true;
+    unlock(pin, true);
+  }
+}
+
+async function unlock(pin, auto) {
+  if (!window.crypto?.subtle) {
+    $("pinNote").textContent = "Unlocking needs a secure (HTTPS) page.";
+    $("pinNote").className = "note error";
+    return;
+  }
+  unlocking = true;
+  $("unlockBtn").disabled = true;
+  $("pinNote").textContent = auto ? "Unlocking with saved PIN…" : "Unlocking…";
+  $("pinNote").className = "note";
+  try {
+    const challenge = decoder.decode(await gatt(() => chars.auth.readValue()));
+    const answer = await hmacHex(pin, challenge);
+    await gatt(() => chars.auth.writeValueWithResponse(new TextEncoder().encode(answer)));
+    if (auto || $("remember").checked) savedPin.set(pin); else savedPin.clear();
+    autoUnlockTried = false;  // allow a silent re-unlock if this one expires later
+    $("pin").value = "";
+    $("pinNote").innerHTML = "&nbsp;";
+    showLocked(false);
+  } catch (e) {
+    if (auto) savedPin.clear();  // the PIN on the Pi must have changed
+    $("pinNote").textContent = auto ? "Saved PIN didn't work. Enter the PIN." : "Wrong PIN.";
+    $("pinNote").className = "note error";
+  } finally {
+    unlocking = false;
+    $("unlockBtn").disabled = false;
+    poll();
+  }
+}
+
+$("pinForm").onsubmit = e => {
+  e.preventDefault();
+  const pin = $("pin").value.trim();
+  if (pin) unlock(pin, false);
+};
 
 function startPolling() {
   stopPolling();
@@ -197,7 +290,10 @@ async function attach() {
     status: await svc.getCharacteristic(STATUS),
     devices: await svc.getCharacteristic(DEVICES),
     control: await svc.getCharacteristic(CONTROL),
+    auth: await svc.getCharacteristic(AUTH),
   };
+  autoUnlockTried = false;
+  showLocked(false);
   setConn("on", "Connected");
   startPolling();
 }
@@ -268,17 +364,26 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden && po
 // ---- Demo mode (?demo): fake data so the page can be previewed without a Pi ----
 let demo;
 function startDemo() {
-  demo = { scan: true, st: 0, n: 0, total: 5210, up: 300 };
+  // Demo PIN is 1234.
+  demo = { scan: true, st: 0, n: 0, total: 5210, up: 300, unlocked: false, challenge: "" };
   chars = {
-    status: { readValue: async () => new TextEncoder().encode(JSON.stringify({
+    status: { readValue: async () => new TextEncoder().encode(JSON.stringify(demo.unlocked ? {
       scan: demo.scan, fix: true, lat: 40.00031, lon: -74.99972, n: demo.n,
-      total: demo.total, live: 17, st: demo.st, up: demo.up })) },
+      total: demo.total, live: 17, st: demo.st, up: demo.up } : { locked: true, wait: 0 })) },
+    auth: {
+      readValue: async () => new TextEncoder().encode(demo.challenge = Math.random().toString(16).slice(2)),
+      writeValueWithResponse: async v => {
+        if (decoder.decode(v) !== await hmacHex("1234", demo.challenge)) throw new Error("NotPermitted");
+        demo.unlocked = true;
+      },
+    },
     devices: { readValue: async () => new TextEncoder().encode(JSON.stringify([
       ["Govee_H6076_661C", "D6:50:81:86:66:1C", -46, 0], ["GAMING-DESKTOP", "72:FC:C6:85:53:AE", -51, 0],
       ["", "4F:12:9A:C0:31:7E", -63, 1], ["Osta", "E1:07:55:2B:90:44", -70, 2],
       ["", "6B:D2:08:1F:AA:05", -84, 9] ])) },
   };
   setInterval(() => { demo.up += 2; if (demo.scan) { demo.st += 2; demo.n += 90; demo.total += 90; } }, 2000);
+  showLocked(false);
   setConn("on", "Connected (demo)");
   startPolling();
 }

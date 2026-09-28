@@ -1,6 +1,6 @@
 // Caches the app so it opens in the field with no internet connection.
 // Network first (so updates show up when online), cache as the fallback.
-const CACHE = "fieldpi-v1";
+const CACHE = "fieldpi-v2";
 const FILES = ["./", "index.html", "manifest.json", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", e => {
