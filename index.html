@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FieldPi Control</title>
+<meta name="theme-color" content="#0f1720">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #ffffff; --text: #111a24; --muted: #5d6b7a; --line: #dfe4ea;
+    --accent: #0f7b6c; --accent-text: #ffffff; --danger: #c2372e; --warn: #b7791f; --ok: #1d8a4b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1720; --card: #17212c; --text: #e8eef4; --muted: #8b9aab; --line: #263342;
+      --accent: #2bb39f; --accent-text: #06201c; --danger: #ef6b61; --warn: #e3a64a; --ok: #4cc47e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 520px; margin: 0 auto; padding: 16px 16px calc(24px + env(safe-area-inset-bottom)); }
+  header { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 16px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--muted); margin: 24px 0 8px; }
+  .pill { font-size: 13px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line);
+          color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.on .dot { background: var(--ok); } .pill.busy .dot { background: var(--warn); }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 12px; padding: 16px; width: 100%;
+           cursor: pointer; background: var(--accent); color: var(--accent-text); }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  button.stop { background: var(--danger); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; min-width: 0; }
+  .tile .label { font-size: 12px; color: var(--muted); }
+  .tile .value { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile .sub { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile.wide { grid-column: span 2; }
+  .good { color: var(--ok); } .bad { color: var(--danger); } .meh { color: var(--warn); }
+  ul { list-style: none; margin: 0; padding: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+  li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--line); }
+  li:first-child { border-top: 0; }
+  .dev { flex: 1; min-width: 0; }
+  .dev .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dev .name.unnamed { font-weight: 400; color: var(--muted); font-style: italic; }
+  .dev .addr { font-size: 12px; color: var(--muted); font-family: ui-monospace, monospace; }
+  .rssi { text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bars { display: inline-flex; gap: 2px; align-items: flex-end; height: 14px; margin-bottom: 2px; }
+  .bars i { width: 4px; background: var(--line); border-radius: 1px; }
+  .bars i.lit { background: var(--accent); }
+  .note { font-size: 13px; color: var(--muted); margin: 12px 0 0; }
+  .error { color: var(--danger); }
+  #connected { display: none; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  .row button { flex: 1; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>FieldPi</h1>
+    <span id="conn" class="pill"><span class="dot"></span><span id="connText">Not connected</span></span>
+  </header>
+
+  <section id="disconnected">
+    <button id="connectBtn">Connect to FieldPi</button>
+    <p class="note" id="connectNote">Make sure Bluetooth is on and the Pi is running <code>main.py</code>.</p>
+  </section>
+
+  <section id="connected">
+    <button id="toggleBtn" disabled>…</button>
+
+    <h2>Status</h2>
+    <div class="grid">
+      <div class="tile"><div class="label">Scanner</div><div class="value" id="scan">–</div><div class="sub" id="scanFor">&nbsp;</div></div>
+      <div class="tile"><div class="label">GPS</div><div class="value" id="fix">–</div><div class="sub" id="coords">&nbsp;</div></div>
+      <div class="tile"><div class="label">This session</div><div class="value" id="session">–</div><div class="sub">new signals logged</div></div>
+      <div class="tile"><div class="label">Nearby now</div><div class="value" id="live">–</div><div class="sub">devices, last 60 s</div></div>
+      <div class="tile wide"><div class="label">Total logged</div><div class="value" id="total">–</div><div class="sub" id="uptime">&nbsp;</div></div>
+    </div>
+
+    <h2>Recent devices</h2>
+    <ul id="devices"><li><span class="dev"><span class="name unnamed">Waiting for data…</span></span></li></ul>
+    <p class="note" id="updated">&nbsp;</p>
+
+    <div class="row"><button class="secondary" id="disconnectBtn">Disconnect</button></div>
+  </section>
+</main>
+
+<script>
+const SERVICE = "ee371e50-2d78-4287-861a-fb3439b47a30";
+const STATUS  = "ee371e51-2d78-4287-861a-fb3439b47a30";
+const DEVICES = "ee371e52-2d78-4287-861a-fb3439b47a30";
+const CONTROL = "ee371e53-2d78-4287-861a-fb3439b47a30";
+
+const $ = id => document.getElementById(id);
+const DEMO = new URLSearchParams(location.search).has("demo");
+let device = null, chars = null, pollTimer = null, tick = 0, lastStatus = null, wantConnected = false;
+
+// Web Bluetooth allows one GATT operation at a time, so everything goes through this queue.
+let queue = Promise.resolve();
+function gatt(fn) {
+  const p = queue.then(fn);
+  queue = p.catch(() => {});
+  return p;
+}
+
+function setConn(state, text) {
+  $("conn").className = "pill " + state;
+  $("connText").textContent = text;
+  const connected = state === "on";
+  $("connected").style.display = connected ? "block" : "none";
+  $("disconnected").style.display = connected ? "none" : "block";
+}
+
+function fmtDuration(s) {
+  if (s < 60) return s + " s";
+  if (s < 3600) return Math.floor(s / 60) + " min " + (s % 60) + " s";
+  return Math.floor(s / 3600) + " h " + Math.floor((s % 3600) / 60) + " min";
+}
+const fmtNum = n => n.toLocaleString();
+
+function renderStatus(s) {
+  lastStatus = s;
+  $("scan").textContent = s.scan ? "Scanning" : "Stopped";
+  $("scan").className = "value " + (s.scan ? "good" : "meh");
+  $("scanFor").textContent = s.scan ? "for " + fmtDuration(s.st) : "idle";
+  $("fix").textContent = s.fix ? "Fix" : "No fix";
+  $("fix").className = "value " + (s.fix ? "good" : "bad");
+  $("coords").textContent = s.fix ? s.lat.toFixed(5) + ", " + s.lon.toFixed(5) : "waiting for satellites";
+  $("session").textContent = fmtNum(s.n);
+  $("live").textContent = fmtNum(s.live);
+  $("total").textContent = fmtNum(s.total);
+  $("uptime").textContent = "Pi app running " + fmtDuration(s.up);
+  const btn = $("toggleBtn");
+  btn.disabled = false;
+  btn.textContent = s.scan ? "Stop scanning" : "Start scanning";
+  btn.className = s.scan ? "stop" : "";
+  $("updated").textContent = "Updated " + new Date().toLocaleTimeString();
+}
+
+function bars(rssi) {
+  const level = rssi >= -55 ? 4 : rssi >= -67 ? 3 : rssi >= -80 ? 2 : 1;
+  return '<span class="bars">' + [6, 9, 12, 14].map((h, i) =>
+    `<i style="height:${h}px" class="${i < level ? "lit" : ""}"></i>`).join("") + "</span>";
+}
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function renderDevices(list) {
+  if (!list.length) {
+    $("devices").innerHTML = '<li><span class="dev"><span class="name unnamed">No devices heard yet</span></span></li>';
+    return;
+  }
+  $("devices").innerHTML = list.map(([name, addr, rssi, ago]) => `
+    <li>
+      <span class="dev">
+        <div class="name ${name ? "" : "unnamed"}">${name ? esc(name) : "Unnamed device"}</div>
+        <div class="addr">${esc(addr)}</div>
+      </span>
+      <span class="rssi">${bars(rssi)}<br>${rssi} dBm · ${ago < 2 ? "now" : ago + " s ago"}</span>
+    </li>`).join("");
+}
+
+const decoder = new TextDecoder();
+const readJSON = c => gatt(() => c.readValue()).then(v => JSON.parse(decoder.decode(v)));
+
+async function poll() {
+  if (document.hidden) return;
+  try {
+    renderStatus(await readJSON(chars.status));
+    if (tick++ % 3 === 0) renderDevices(await readJSON(chars.devices));
+  } catch (e) {
+    console.warn("poll failed", e);
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  tick = 0;
+  poll();
+  pollTimer = setInterval(poll, 2000);
+}
+function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
+
+async function attach() {
+  setConn("busy", "Connecting…");
+  const server = await device.gatt.connect();
+  const svc = await server.getPrimaryService(SERVICE);
+  chars = {
+    status: await svc.getCharacteristic(STATUS),
+    devices: await svc.getCharacteristic(DEVICES),
+    control: await svc.getCharacteristic(CONTROL),
+  };
+  setConn("on", "Connected");
+  startPolling();
+}
+
+async function onDisconnected() {
+  stopPolling();
+  chars = null;
+  if (!wantConnected) { setConn("", "Not connected"); return; }
+  // Out of range or the Pi restarted — keep trying for a while.
+  for (let attempt = 1; attempt <= 10 && wantConnected; attempt++) {
+    setConn("busy", `Reconnecting (${attempt})…`);
+    try { await attach(); return; } catch (e) { await new Promise(r => setTimeout(r, 3000)); }
+  }
+  setConn("", "Connection lost");
+  $("connectNote").textContent = "Lost the connection to the Pi. Tap Connect to try again.";
+}
+
+$("connectBtn").onclick = async () => {
+  $("connectNote").classList.remove("error");
+  if (DEMO) return startDemo();
+  if (!navigator.bluetooth) {
+    $("connectNote").textContent = "This browser can't use Bluetooth. Open this page in Chrome on Android.";
+    $("connectNote").classList.add("error");
+    return;
+  }
+  try {
+    if (!device) {
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [SERVICE] }, { name: "FieldPi" }],
+        optionalServices: [SERVICE],
+      });
+      device.addEventListener("gattserverdisconnected", onDisconnected);
+    }
+    wantConnected = true;
+    await attach();
+  } catch (e) {
+    setConn("", "Not connected");
+    if (e.name !== "NotFoundError") {  // NotFoundError = user closed the picker
+      $("connectNote").textContent = "Couldn't connect: " + e.message;
+      $("connectNote").classList.add("error");
+    }
+  }
+};
+
+$("disconnectBtn").onclick = () => {
+  wantConnected = false;
+  if (DEMO) { stopPolling(); setConn("", "Not connected"); return; }
+  device?.gatt.disconnect();
+};
+
+$("toggleBtn").onclick = async () => {
+  const cmd = lastStatus?.scan ? "stop" : "start";
+  const btn = $("toggleBtn");
+  btn.disabled = true;
+  btn.textContent = cmd === "stop" ? "Stopping…" : "Starting…";
+  try {
+    if (DEMO) demoCommand(cmd);
+    else await gatt(() => chars.control.writeValueWithResponse(new TextEncoder().encode(cmd)));
+    setTimeout(poll, 1200);  // give the Pi a moment, then refresh
+  } catch (e) {
+    btn.disabled = false;
+    $("updated").textContent = "Command failed: " + e.message;
+  }
+};
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden && pollTimer) poll(); });
+
+// ---- Demo mode (?demo): fake data so the page can be previewed without a Pi ----
+let demo;
+function startDemo() {
+  demo = { scan: true, st: 0, n: 0, total: 5210, up: 300 };
+  chars = {
+    status: { readValue: async () => new TextEncoder().encode(JSON.stringify({
+      scan: demo.scan, fix: true, lat: 40.00031, lon: -74.99972, n: demo.n,
+      total: demo.total, live: 17, st: demo.st, up: demo.up })) },
+    devices: { readValue: async () => new TextEncoder().encode(JSON.stringify([
+      ["Govee_H6076_661C", "D6:50:81:86:66:1C", -46, 0], ["GAMING-DESKTOP", "72:FC:C6:85:53:AE", -51, 0],
+      ["", "4F:12:9A:C0:31:7E", -63, 1], ["Osta", "E1:07:55:2B:90:44", -70, 2],
+      ["", "6B:D2:08:1F:AA:05", -84, 9] ])) },
+  };
+  setInterval(() => { demo.up += 2; if (demo.scan) { demo.st += 2; demo.n += 90; demo.total += 90; } }, 2000);
+  setConn("on", "Connected (demo)");
+  startPolling();
+}
+function demoCommand(cmd) { demo.scan = cmd === "start"; if (demo.scan) { demo.st = 0; demo.n = 0; } }
+
+if ("serviceWorker" in navigator && location.protocol === "https:") {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+</script>
+</body>
+</html>
